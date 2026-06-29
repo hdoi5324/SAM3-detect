@@ -1,0 +1,41 @@
+# Minimal install manifest for sqbot runtime (sam3_segment_bot only).
+# Copied into a deploy repo by sync_sqbot_deploy_package.sh --init-repo.
+
+[build-system]
+requires = ["setuptools>=61.0,<81"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sam3-detect"
+version = "0.1.0"
+description = "SAM3 exemplar detect/segment bot for Squidle+ (sqbot)"
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+dependencies = [
+    "setuptools<81",
+    "numpy>=1.26,<2",
+    "pandas==2.2.3",
+    "pandas-stubs~=2.2.3",
+    "sqapi>=0.49",
+    "measure",
+    "pillow",
+    "shapely",
+    "opencv-python-headless",
+    "scikit-image",
+    "sam3",
+    "torch",
+    "torchvision",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+sam3 = { git = "https://github.com/facebookresearch/sam3" }
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
