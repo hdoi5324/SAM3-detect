@@ -9,7 +9,8 @@ class Sam3Image(_Sam3Image):
             backbone_out,
             find_input,
             geometric_prompt,
-            encode_text=True,
+            encode_text=True, #todo: set to false?
+            use_img_pos_embed=True,
     ):
         # Encoding part of Sam3Image.forward_grounding
         with torch.profiler.record_function("SAM3Image._encode_prompt"):
@@ -18,6 +19,7 @@ class Sam3Image(_Sam3Image):
             prompt, prompt_mask, backbone_out, txt_feats, txt_masks, geo_feats, geo_masks, visual_prompt_embed, visual_prompt_mask = self._encode_prompt(
                 backbone_out, find_input, geometric_prompt.clone(),
                 encode_text=encode_text,
+                use_img_pos_embed=use_img_pos_embed,
             )
         return prompt, prompt_mask, backbone_out, txt_feats, txt_masks, geo_feats, geo_masks, visual_prompt_embed, visual_prompt_mask
 
@@ -30,6 +32,7 @@ class Sam3Image(_Sam3Image):
         visual_prompt_mask=None,
         encode_text=True,
         prev_mask_pred=None,
+        use_img_pos_embed=True,
     ):
         # index text features (note that regardless of early or late fusion, the batch size of
         # `txt_feats` is always the number of *prompts* in the encoder)
@@ -47,7 +50,7 @@ class Sam3Image(_Sam3Image):
             geo_prompt=geometric_prompt,
             img_feats=img_feats,
             img_sizes=vis_feat_sizes,
-            img_pos_embeds=img_pos_embeds,
+            img_pos_embeds=img_pos_embeds if use_img_pos_embed else None, 
         )
         if visual_prompt_embed is None:
             visual_prompt_embed = torch.zeros(
