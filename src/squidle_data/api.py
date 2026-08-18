@@ -7,7 +7,6 @@ import os
 import pathlib
 
 import pandas as pd
-from dotenv import load_dotenv
 from sqapi.api import SQAPI
 
 # Columns for api/annotation_set/{id}/export.
@@ -63,10 +62,12 @@ def connect_sqapi(
     if sqapi is not None:
         return sqapi
 
-    if env_path is not None:
-        load_dotenv(env_path)
-    elif api_key is None:
-        load_dotenv()
+    if api_key is None:
+        from dotenv import load_dotenv
+        if env_path is not None and api_key:
+            load_dotenv(env_path)
+        elif api_key is None:
+            load_dotenv()
 
     key = api_key or os.environ.get("SQUIDLE_API_TOKEN") or os.environ.get("SQUIDLE_API_KEY")
     if not key:
