@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite it as below. A paper describing the
+  FSOD method is in preparation (arXiv preprint to be added on submission);
+  cite that once available.
+title: "SAM3-FSOD: Few-Shot Object Detection with SAM3 Exemplar Prompts and DINOv2 Score Refinement"
+type: software
+authors:
+  - family-names: Doig
+    given-names: Heather
+version: 0.1.0
+license: Apache-2.0
+# doi: TODO (add arXiv / journal DOI once available)
+# repository-code: TODO (add public SAM3-FSOD URL once created)

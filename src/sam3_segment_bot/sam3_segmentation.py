@@ -109,7 +109,7 @@ class SAM3Segmenter(Annotator):
             raise ValueError(f"dino_score_alpha must be in [0, 1], got {self.dino_score_alpha}")
         self.dinov2_name = dinov2_name or DEFAULT_DINOV2_NAME
         self.dino_long_side = int(dino_long_side) if dino_long_side else DEFAULT_DINO_LONG_SIDE
-        self.dino_device = dino_device
+        self.dino_device = dino_device  # None/auto -> SAM3 device (GPU)
         self.dino_model = None
         self.dino_proto_feat = None
         self.dino_proto_label_ids = []
@@ -140,6 +140,8 @@ class SAM3Segmenter(Annotator):
         return str(self.device)
 
     def _release_dino_gpu(self):
+        """Move DINO off GPU (only used if explicitly tearing down; the
+        normal path keeps DINO resident on GPU for the whole run)."""
         if self.dino_model is None:
             return
         try:
@@ -170,9 +172,10 @@ class SAM3Segmenter(Annotator):
                 device=dino_device,
                 target_long_side=self.dino_long_side,
             )
-            self.dino_proto_feat = proto_feat.detach().cpu()
+            # DINO stays on GPU for the whole run (target machines have
+            # enough VRAM for SAM3 + DINOv2 together).
+            self.dino_proto_feat = proto_feat.detach()
             self.dino_proto_label_ids = list(proto_labels)
-            self._release_dino_gpu()
             print(
                 f"DINO prototypes: {len(self.dino_proto_label_ids)} labels, "
                 f"alpha={self.dino_score_alpha:.2f}, model={self.dinov2_name}"
@@ -190,16 +193,12 @@ class SAM3Segmenter(Annotator):
             from exemplar_seg.dino_prototypes import get_dinov2_features
 
             dino_device = self._resolved_dino_device()
-            if str(dino_device).startswith("cuda"):
-                self.dino_model.to(dino_device)
             feat = get_dinov2_features(
                 self.dino_model,
                 pil_image,
                 device=dino_device,
                 target_long_side=self.dino_long_side,
             )
-            if str(dino_device).startswith("cuda") and str(self.device).startswith("cuda"):
-                self._release_dino_gpu()
             return feat
         except Exception as exc:  # noqa: BLE001
             print(f"DINO feature extraction failed ({exc}); SAM3-only scores for this media")

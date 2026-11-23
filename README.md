@@ -36,8 +36,10 @@ Bot parameters (sqbot `create_parser` arguments):
 | `dino_device` | `None` (auto) | DINO device; auto follows the SAM3 device |
 
 DINO failures (download, GPU memory) are non-fatal: the bot logs a warning
-and continues with SAM3-only scores. DINO weights/GPU are staged off the GPU
-between SAM3 grounding passes, as in the FSOD reference implementation.
+and continues with SAM3-only scores. DINOv2 runs on the GPU and stays
+resident alongside SAM3 (target machines have enough VRAM); overlapping
+candidates are suppressed with global, class-agnostic polygon NMS
+(`exemplar_seg.postprocess.suppress_overlapping_candidates`).
 
 ## Layout
 
@@ -53,3 +55,12 @@ between SAM3 grounding passes, as in the FSOD reference implementation.
 ```bash
 PYTHONPATH=src python -m pytest tests/ -q
 ```
+
+## Citation
+
+Please cite this software using [`CITATION.cff`](CITATION.cff) (synced from
+the canonical ExemplarSegmentation repository).
+
+## Licence
+
+Licensed under the Apache License, Version 2.0 (see `LICENSE`).

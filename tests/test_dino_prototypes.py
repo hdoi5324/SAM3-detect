@@ -85,6 +85,25 @@ def test_bot_candidates_store_fused_score():
     assert cands[0].score == pytest.approx(0.5 * 0.8 + 0.5 * 1.0, abs=0.05)
 
 
+def test_global_nms_suppresses_across_labels():
+    """NMS is global (class-agnostic): an overlapping lower-score candidate
+    is suppressed even when it has a different label_id."""
+    from exemplar_seg.postprocess import build_candidate, suppress_overlapping_candidates
+
+    square = [[0, 0], [10, 0], [10, 10], [0, 10]]
+    shifted = [[1, 1], [11, 1], [11, 11], [1, 11]]  # IoU ~0.68 with square
+    far = [[20, 20], [25, 20], [25, 25], [20, 25]]
+    cands = [
+        build_candidate(score=0.9, label_id=1, poly=square, hit_point_indices=[]),
+        build_candidate(score=0.8, label_id=2, poly=shifted, hit_point_indices=[]),
+        build_candidate(score=0.7, label_id=2, poly=far, hit_point_indices=[]),
+    ]
+    kept = suppress_overlapping_candidates(cands, iou_threshold=0.5)
+    assert [c.label_id for c in kept] == [1, 2]
+    assert kept[0].score == pytest.approx(0.9)
+    assert kept[1].poly == far
+
+
 def test_score_masks_against_prototypes():
     feat = torch.ones(1, 4, 2, 2)
     proto, labels = dp.build_prototypes({7: [torch.ones(4)]}, device="cpu")
