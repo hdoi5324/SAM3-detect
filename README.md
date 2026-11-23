@@ -11,6 +11,9 @@ Installed by sqbot as a git dependency:
 sam3-exemplar-detect = { git = "https://github.com/hdoi5324/SAM3-detect" }
 ```
 
+Until the `dino-score-fusion` branch is merged, add
+`branch = "dino-score-fusion"` to that source to get DINO score refinement.
+
 ## Method
 
 SAM3 exemplar prompts propose candidate polygons. From this branch, candidate
