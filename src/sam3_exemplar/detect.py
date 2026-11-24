@@ -195,34 +195,54 @@ def masks_scores_to_coco_annotations(
     image_height: int,
     score_thresh: float,
     start_ann_id: int,
+    dino_cosine_rows: List[Dict[str, float]] | None = None,
+    dino_score_alpha: float = 0.5,
 ) -> List[Dict[str, Any]]:
-    """Convert SAM3 instance masks/scores into COCO annotation dicts."""
-    polygons, kept_scores = masks_scores_to_polygons(
+    """Convert SAM3 instance masks/scores into COCO annotation dicts.
+
+    When ``dino_cosine_rows`` is provided (aligned with input masks), each ann
+    also gets ``sam3_score``, ``dino_cosine``, ``dino_cosine_pred``,
+    ``dino_best_category_id``, and fused ``score`` via
+    ``alpha * sam3 + (1-alpha) * dino_cosine_pred``.
+    """
+    from exemplar_seg.dino_prototypes import dino_row_extras
+
+    polygons, kept_scores, keep_idx = masks_scores_to_polygons(
         masks,
         scores,
         score_thresh=score_thresh,
         output_width=image_width,
         output_height=image_height,
+        return_indices=True,
     )
 
     anns: List[Dict[str, Any]] = []
-    for offset, (flat, score) in enumerate(zip(polygons, kept_scores)):
+    for offset, (flat, score, src_i) in enumerate(
+        zip(polygons, kept_scores, keep_idx)
+    ):
         xs = flat[0::2]
         ys = flat[1::2]
         x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
         bbox = [x0, y0, max(1.0, x1 - x0), max(1.0, y1 - y0)]
-        anns.append(
-            {
-                "id": start_ann_id + offset,
-                "image_id": int(image_id),
-                "category_id": int(category_id),
-                "bbox": bbox,
-                "area": float(bbox[2] * bbox[3]),
-                "iscrowd": 0,
-                "score": score,
-                "segmentation": [flat],
-            }
-        )
+        ann: Dict[str, Any] = {
+            "id": start_ann_id + offset,
+            "image_id": int(image_id),
+            "category_id": int(category_id),
+            "bbox": bbox,
+            "area": float(bbox[2] * bbox[3]),
+            "iscrowd": 0,
+            "score": score,
+            "segmentation": [flat],
+        }
+        if dino_cosine_rows is not None and 0 <= src_i < len(dino_cosine_rows):
+            extras = dino_row_extras(
+                dino_cosine_rows[src_i],
+                int(category_id),
+                alpha=float(dino_score_alpha),
+                sam3_score=float(score),
+            )
+            ann.update(extras)
+        anns.append(ann)
     return anns
 
 
@@ -233,32 +253,42 @@ def masks_scores_to_polygons(
     score_thresh: float = 0.0,
     output_width: int | None = None,
     output_height: int | None = None,
-) -> tuple[List[List[float]], List[float]]:
+    return_indices: bool = False,
+) -> tuple[List[List[float]], List[float]] | tuple[List[List[float]], List[float], List[int]]:
     """Convert instance masks to largest-contour polygons and aligned scores.
 
     Polygons are flat pixel-coordinate rings, one per retained instance. When
     output dimensions are supplied, vertices are scaled from mask resolution to
     that image resolution.
+
+    Masks are converted one at a time. A single float32 copy of a 20-class stack
+    (hundreds of 1024² masks) is large enough to be killed by the OOM killer.
+
+    If ``return_indices`` is True, also returns the source mask indices kept.
     """
     if masks.ndim == 2:
         masks = masks.unsqueeze(0)
     if scores.dim() == 1:
         scores = scores.unsqueeze(1)
     scores_1d = scores.view(-1).float().cpu()
-    masks_np = masks.float().cpu().numpy()
 
     polygons: List[List[float]] = []
     kept_scores: List[float] = []
-    for i in range(masks_np.shape[0]):
+    keep_idx: List[int] = []
+    for i in range(int(masks.shape[0])):
         score = float(scores_1d[i].item())
         if score < score_thresh:
             continue
-        polys = mask_to_polygon(masks_np[i])
+        plane = masks[i].detach()
+        if plane.dtype.is_floating_point:
+            plane = plane.float()
+        mask_np = plane.cpu().numpy()
+        polys = mask_to_polygon(mask_np)
         if not polys:
             continue
         best = max(polys, key=lambda ring: len(ring))
         flat: list[float] = []
-        mask_height, mask_width = masks_np[i].shape[-2:]
+        mask_height, mask_width = mask_np.shape[-2:]
         scale_x = float(output_width) / mask_width if output_width is not None else 1.0
         scale_y = float(output_height) / mask_height if output_height is not None else 1.0
         for x, y in best:
@@ -267,6 +297,9 @@ def masks_scores_to_polygons(
             continue
         polygons.append(flat)
         kept_scores.append(score)
+        keep_idx.append(i)
+    if return_indices:
+        return polygons, kept_scores, keep_idx
     return polygons, kept_scores
 
 

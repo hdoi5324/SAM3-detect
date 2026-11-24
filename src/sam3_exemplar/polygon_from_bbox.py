@@ -66,6 +66,62 @@ def mask_fraction_inside_bbox(
     return float(inside.mean()) if inside.size else 0.0
 
 
+def mask_contains_norm_point(mask_2d: np.ndarray, x_norm: float, y_norm: float) -> bool:
+    """True when the normalized click lands on a foreground pixel."""
+    m = np.asarray(mask_2d).astype(bool)
+    if m.ndim != 2 or not m.any():
+        return False
+    h, w = m.shape
+    x = int(round(float(x_norm) * (w - 1)))
+    y = int(round(float(y_norm) * (h - 1)))
+    x = max(0, min(w - 1, x))
+    y = max(0, min(h - 1, y))
+    return bool(m[y, x])
+
+
+def select_best_mask_for_click(
+    masks: torch.Tensor,
+    scores: torch.Tensor,
+    x_norm: float,
+    y_norm: float,
+    box_xywh_norm: Sequence[float] | None = None,
+    *,
+    min_frac_inside: float = 0.95,
+) -> int | None:
+    """
+    Highest-score mask that covers the click.
+
+    When ``box_xywh_norm`` is set, prefer masks whose foreground is mostly
+    inside that box (loose catalogue AABB). Falls back to any click-covering
+    mask if none meet ``min_frac_inside``.
+    """
+    if masks is None or scores is None:
+        return None
+    flat_scores = scores.reshape(-1)
+    n = int(flat_scores.numel())
+    if n == 0 or int(masks.shape[0]) == 0:
+        return None
+
+    contained: list[tuple[float, int]] = []
+    covering: list[tuple[float, int]] = []
+    for i in range(min(n, int(masks.shape[0]))):
+        mask_np = _mask_to_numpy_2d(masks[i])
+        if not mask_contains_norm_point(mask_np, x_norm, y_norm):
+            continue
+        sc = float(flat_scores[i].item())
+        covering.append((sc, i))
+        if box_xywh_norm is not None:
+            frac = mask_fraction_inside_bbox(mask_np, box_xywh_norm)
+            if frac + 1e-9 >= float(min_frac_inside):
+                contained.append((sc, i))
+        else:
+            contained.append((sc, i))
+    pool = contained or covering
+    if not pool:
+        return None
+    return max(pool, key=lambda t: t[0])[1]
+
+
 def select_best_contained_mask_index(
     masks: torch.Tensor,
     scores: torch.Tensor,
@@ -106,8 +162,9 @@ def save_polygon_from_bbox_debug(
     *,
     score: float | None = None,
     status: str = "ok",
+    click_xy_norm: Sequence[float] | None = None,
 ) -> None:
-    """Save RGB overlay: support image, red GT bbox, green selected mask."""
+    """Save RGB overlay: support image, red GT bbox, green selected mask, yellow click."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     rgb = image.convert("RGB")
@@ -121,7 +178,6 @@ def save_polygon_from_bbox_debug(
     if mask_2d is not None:
         m = np.asarray(mask_2d).astype(bool)
         if m.shape[:2] != (h, w):
-            # Resize mask to image size if SAM state resolution differs.
             from PIL import Image as PILImage
 
             m_img = PILImage.fromarray((m.astype(np.uint8) * 255))
@@ -132,11 +188,18 @@ def save_polygon_from_bbox_debug(
         for y, x in zip(ys.tolist(), xs.tolist()):
             tint_px[x, y] = (0, 255, 0, 110)
         overlay = Image.alpha_composite(overlay, tint)
+        draw = ImageDraw.Draw(overlay)
+
+    if click_xy_norm is not None and len(click_xy_norm) >= 2:
+        cx = int(round(float(click_xy_norm[0]) * w))
+        cy = int(round(float(click_xy_norm[1]) * h))
+        r = max(4, min(w, h) // 80)
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 0, 255), width=3)
+        draw.ellipse([cx - 2, cy - 2, cx + 2, cy + 2], fill=(255, 255, 0, 255))
 
     label = f"{status}"
     if score is not None:
         label += f" score={score:.3f}"
-    draw = ImageDraw.Draw(overlay)
     draw.text((8, 8), label, fill=(255, 255, 0, 255))
     overlay.convert("RGB").save(out_path)
 
@@ -199,6 +262,101 @@ def refine_box_to_polygon_via_sam3(
             status=status,
         )
 
+    return verts
+
+
+def refine_point_to_polygon_via_sam3(
+    processor,
+    state: Dict[str, Any],
+    click_xy_norm: Sequence[float],
+    box_xywh_norm: Sequence[float] | None = None,
+    *,
+    prompt: str = "point",
+    mask_threshold: float = 0.5,
+    min_frac_inside: float = 0.95,
+    debug_image: Image.Image | None = None,
+    debug_path: Path | None = None,
+) -> list[tuple[float, float]] | None:
+    """Ground a click (optionally with the catalogue box) and return a tight polygon.
+
+    ``prompt``:
+      - ``point``: click only (default). Catalogue box is a containment filter.
+      - ``box``: catalogue box only (same as :func:`refine_box_to_polygon_via_sam3`).
+      - ``point_and_box``: click + box prompts together.
+    """
+    from sam3_exemplar.detect import binary_mask_to_norm_polygon
+
+    if click_xy_norm is None or len(click_xy_norm) < 2:
+        return None
+    x_n, y_n = float(click_xy_norm[0]), float(click_xy_norm[1])
+    prompt = (prompt or "point").lower()
+    if prompt not in ("point", "box", "point_and_box"):
+        raise ValueError(f"prompt must be point|box|point_and_box; got {prompt!r}")
+
+    processor.reset_all_prompts(state)
+    box_list: list = []
+    box_labels: list = []
+    point_list: list = []
+    point_labels: list = []
+    if prompt in ("box", "point_and_box"):
+        if box_xywh_norm is None or len(box_xywh_norm) != 4:
+            raise ValueError(f"prompt={prompt} requires box_xywh_norm")
+        cxcywh = box_xywh_to_cxcywh(
+            torch.tensor(list(box_xywh_norm), dtype=torch.float32).view(1, 4)
+        )
+        box_list = [cxcywh.view(-1).tolist()]
+        box_labels = [True]
+    if prompt in ("point", "point_and_box"):
+        point_list = [[x_n, y_n]]
+        point_labels = [True]
+    state = processor.forward_grounding_with_geometry_prompts(
+        state,
+        box_list,
+        box_labels,
+        point_list,
+        point_labels,
+        mask_threshold=mask_threshold,
+    )
+    masks = state.get("masks")
+    scores = state.get("scores")
+    if prompt == "box":
+        best_idx = select_best_contained_mask_index(
+            masks,
+            scores,
+            box_xywh_norm or (0.0, 0.0, 1.0, 1.0),
+            min_frac_inside=min_frac_inside,
+        )
+    else:
+        best_idx = select_best_mask_for_click(
+            masks,
+            scores,
+            x_n,
+            y_n,
+            box_xywh_norm,
+            min_frac_inside=min_frac_inside,
+        )
+
+    mask_np: np.ndarray | None = None
+    score_f: float | None = None
+    status = "fallback_no_mask"
+    verts: list[tuple[float, float]] | None = None
+    if best_idx is not None and masks is not None and best_idx < int(masks.shape[0]):
+        mask_np = _mask_to_numpy_2d(masks[best_idx])
+        if scores is not None:
+            score_f = float(scores.reshape(-1)[best_idx].item())
+        verts = binary_mask_to_norm_polygon(mask_np)
+        status = "ok" if verts is not None else "fallback_empty_polygon"
+
+    if debug_path is not None and debug_image is not None and box_xywh_norm is not None:
+        save_polygon_from_bbox_debug(
+            debug_image,
+            box_xywh_norm,
+            mask_np,
+            debug_path,
+            score=score_f,
+            status=status,
+            click_xy_norm=(x_n, y_n),
+        )
     return verts
 
 

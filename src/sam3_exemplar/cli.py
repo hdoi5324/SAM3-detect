@@ -32,10 +32,9 @@ from sam3_exemplar.cli_config import (
     unique_run_dir,
     write_cli_invocation,
 )
-from sam3_exemplar.file_exemplars import (
-    load_exemplar_annotations,
+from sam3_exemplar.file_exemplars import load_exemplar_annotations, select_k_shot_annotations
+from sam3_exemplar.squidle_exemplars import (
     load_squidle_annotation_df,
-    select_k_shot_annotations,
     squidle_negative_exemplars_for_image,
     squidle_positive_label_ids_on_image,
 )

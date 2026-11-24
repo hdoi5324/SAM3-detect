@@ -1,5 +1,5 @@
-# Minimal install manifest for sqbot runtime (sam3_segment_bot only).
-# Copied into a deploy repo by sync_sqbot_deploy_package.sh --init-repo.
+# Squidle-bot runtime satellite. Code is exported from ExemplarSegmentation
+# by scripts/export_to_sam3_detect.py (do not overwrite this file on export).
 
 [build-system]
 requires = ["setuptools>=61.0,<81"]
@@ -7,8 +7,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sam3-exemplar-detect"
-version = "1.0"
+version = "1.1.0"
 description = "SAM3 exemplar detect/segment bot for Squidle+ (sqbot)"
+license = { text = "Apache-2.0" }
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [

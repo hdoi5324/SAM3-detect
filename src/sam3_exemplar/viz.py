@@ -16,6 +16,20 @@ from sam3_exemplar.file_exemplars import load_exemplar_annotations
 from sam3_exemplar.images import load_image
 
 
+def _coerce_plot_image(img) -> Image.Image:
+    """Accept a path/URL, PIL image, or ndarray for collage panels."""
+    if isinstance(img, Image.Image):
+        return img.convert("RGB") if img.mode != "RGB" else img
+    if isinstance(img, np.ndarray):
+        arr = np.asarray(img)
+        if arr.ndim == 2:
+            return Image.fromarray(arr).convert("RGB")
+        if arr.ndim == 3 and arr.shape[2] == 1:
+            return Image.fromarray(arr[:, :, 0]).convert("RGB")
+        return Image.fromarray(arr).convert("RGB")
+    return load_image(img)
+
+
 COLORS = generate_colors(n_colors=128, n_samples=5000)
 
 
@@ -224,9 +238,12 @@ def plot_exemplars_side_by_side(
     if polygons_per_image is None:
         polygons_per_image = [[] for _ in range(N)]
     if titles is None:
-        titles = [os.path.basename(i) for i in image_paths]
+        titles = [
+            os.path.basename(i) if isinstance(i, (str, Path)) else ""
+            for i in image_paths
+        ]
 
-    images = [load_image(img) for img in image_paths]
+    images = [_coerce_plot_image(img) for img in image_paths]
 
 
     if ncols is None:

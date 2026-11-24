@@ -73,6 +73,11 @@ class SAM3Segmenter(MediaAnnotator):
         wms_occupancy_min_fraction=0.0,
         wms_max_tiles=None,
         supported_media_types=None,
+        dino_enabled=True,
+        dino_score_alpha=0.5,
+        dinov2_name="dinov2_vitl14",
+        dino_long_side=630,
+        dino_device=None,
         **annotator_args,
     ):
         super().__init__(supported_media_types=supported_media_types, **annotator_args)
@@ -141,6 +146,21 @@ class SAM3Segmenter(MediaAnnotator):
         self.prompts_by_label_id = {}
         self.model = None
 
+        # DINOv2 prototype score refinement (journal method, alpha=0.5):
+        # fused score = alpha * SAM3 + (1 - alpha) * DINO cosine, stored as
+        # the detection score / Squidle likelihood. Set dino_enabled=False
+        # (or dino_score_alpha=1.0) for SAM3-only behaviour.
+        self.dino_enabled = bool(dino_enabled) if dino_enabled is not None else True
+        self.dino_score_alpha = float(dino_score_alpha) if dino_score_alpha is not None else 0.5
+        if not 0.0 <= self.dino_score_alpha <= 1.0:
+            raise ValueError(f"dino_score_alpha must be in [0, 1], got {self.dino_score_alpha}")
+        self.dinov2_name = dinov2_name or "dinov2_vitl14"
+        self.dino_long_side = int(dino_long_side) if dino_long_side else 630
+        self.dino_device = dino_device  # None/auto -> follow SAM3 device
+        self.dino_model = None
+        self.dino_proto_feat = None
+        self.dino_proto_label_ids: list = []
+
     def _ensure_model(self) -> None:
         if self.model is None:
             print("Loading SAM model...")
@@ -168,6 +188,96 @@ class SAM3Segmenter(MediaAnnotator):
                     use_img_pos_embed=self.use_img_pos_embed,
                     encode_text=self.encode_text,
                 )
+        self._ensure_dino_prototypes()
+
+    # -- DINOv2 prototype scoring -------------------------------------------
+    def _resolved_dino_device(self) -> str:
+        if self.dino_device and str(self.dino_device).strip().lower() not in ("", "auto"):
+            return str(self.dino_device)
+        return str(self.device)
+
+    def _ensure_dino_prototypes(self) -> None:
+        """Load DINOv2 and build per-label prototypes from the exemplars.
+
+        Failures are non-fatal: the bot falls back to SAM3-only scores so a
+        DINO download/GPU issue never kills a Squidle run.
+        """
+        self.dino_proto_feat = None
+        self.dino_proto_label_ids = []
+        if not self.dino_enabled or not self.exemplars_by_label_id:
+            return
+        try:
+            from exemplar_seg.dino_prototypes import (
+                build_prototypes_from_exemplar_dict,
+                load_dinov2,
+            )
+
+            dino_device = self._resolved_dino_device()
+            if self.dino_model is None:
+                self.dino_model, _ = load_dinov2(device=dino_device, model_name=self.dinov2_name)
+            proto_feat, proto_labels = build_prototypes_from_exemplar_dict(
+                self.exemplars_by_label_id,
+                self.dino_model,
+                device=dino_device,
+                target_long_side=self.dino_long_side,
+            )
+            self.dino_proto_feat = proto_feat.detach().cpu()
+            self.dino_proto_label_ids = list(proto_labels)
+            # Free GPU for SAM3 grounding; the model is staged back briefly
+            # per media unit in _dino_feat_map_for_image.
+            self._release_dino_gpu()
+            print(
+                f"DINO prototypes: {len(self.dino_proto_label_ids)} labels, "
+                f"alpha={self.dino_score_alpha:.2f}, model={self.dinov2_name}"
+            )
+        except Exception as exc:  # noqa: BLE001 - fall back to SAM3-only scores
+            print(f"DINO prototype build failed ({exc}); continuing with SAM3-only scores")
+            self.dino_proto_feat = None
+            self.dino_proto_label_ids = []
+
+    def _release_dino_gpu(self) -> None:
+        if self.dino_model is None:
+            return
+        try:
+            self.dino_model.to("cpu")
+        except Exception:
+            pass
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def _dino_feat_map_for_image(self, pil_image):
+        """DINO feature map for one query image, or None if unavailable."""
+        if self.dino_model is None or self.dino_proto_feat is None:
+            return None
+        try:
+            from exemplar_seg.dino_prototypes import get_dinov2_features
+
+            dino_device = self._resolved_dino_device()
+            if str(dino_device).startswith("cuda"):
+                self.dino_model.to(dino_device)
+            feat = get_dinov2_features(
+                self.dino_model,
+                pil_image,
+                device=dino_device,
+                target_long_side=self.dino_long_side,
+            )
+            if str(dino_device).startswith("cuda") and str(self.device).startswith("cuda"):
+                self._release_dino_gpu()
+            return feat
+        except Exception as exc:  # noqa: BLE001
+            print(f"DINO feature extraction failed ({exc}); SAM3-only scores for this unit")
+            return None
+
+    def _clear_dino(self) -> None:
+        self.dino_proto_feat = None
+        self.dino_proto_label_ids = []
+        if self.dino_model is not None:
+            try:
+                self.dino_model.to("cpu")
+            except Exception:
+                pass
+            self.dino_model = None
 
     def on_annotation_end(self, ctx: AnnotationContext) -> None:
         def _gpu_mem_mb():
@@ -190,6 +300,7 @@ class SAM3Segmenter(MediaAnnotator):
 
         self.exemplars_by_label_id = {}
         self.prompts_by_label_id = {}
+        self._clear_dino()
         if self.model is not None:
             try:
                 self.model.to("cpu")
@@ -307,6 +418,7 @@ class SAM3Segmenter(MediaAnnotator):
         all_detections = []
 
         image_data = unit.image_rgb
+        dino_feat_map = self._dino_feat_map_for_image(Image.fromarray(image_data))
         processor = make_processor(self.model, self.inference_config)
         with autocast_scope(
             device=self.device, dtype=self.autocast_dtype, enabled=self.use_autocast
@@ -333,6 +445,7 @@ class SAM3Segmenter(MediaAnnotator):
                     point_indices,
                     unit.frame_width,
                     unit.frame_height,
+                    dino_feat_map=dino_feat_map,
                 )
             )
         return all_detections
@@ -394,11 +507,43 @@ class SAM3Segmenter(MediaAnnotator):
         point_indices,
         frame_width,
         frame_height,
+        dino_feat_map=None,
     ):
+        # Fused scores (alpha * SAM3 + (1 - alpha) * DINO cosine) replace the
+        # SAM3 scores everywhere downstream, including the stored likelihood.
+        fused_scores = None
+        if dino_feat_map is not None and self.dino_proto_feat is not None:
+            try:
+                from exemplar_seg.dino_prototypes import (
+                    dino_row_extras,
+                    score_masks_against_prototypes,
+                )
+
+                masks_3d = masks.squeeze(1) if masks.ndim == 4 else masks
+                _sims, rows = score_masks_against_prototypes(
+                    dino_feat_map,
+                    masks_3d,
+                    self.dino_proto_feat,
+                    self.dino_proto_label_ids,
+                )
+                fused_scores = [
+                    float(
+                        dino_row_extras(
+                            rows[i],
+                            int(label_id),
+                            alpha=self.dino_score_alpha,
+                            sam3_score=float(scores[i].item()),
+                        )["score"]
+                    )
+                    for i in range(len(scores))
+                ]
+            except Exception as exc:  # noqa: BLE001
+                print(f"DINO mask scoring failed ({exc}); SAM3-only scores")
+                fused_scores = None
         detections = []
         for i in range(len(scores)):
             mask_np = masks[i].squeeze(0).cpu().numpy()
-            prob = scores[i].item()
+            prob = fused_scores[i] if fused_scores is not None else scores[i].item()
             hit_local = points_inside_mask(mask_np, label_pts_coords)
             hit_indices = [point_indices[j] for j in hit_local]
             raw_polys = mask_to_polygon(mask_np)
@@ -451,6 +596,7 @@ class SAM3Segmenter(MediaAnnotator):
         point_indices,
         frame_width,
         frame_height,
+        dino_feat_map=None,
     ):
         box_inputs, box_labels, point_inputs, point_labels = processor.build_query_geometry_prompts(
             label_points,
@@ -498,4 +644,5 @@ class SAM3Segmenter(MediaAnnotator):
             point_indices,
             frame_width,
             frame_height,
+            dino_feat_map=dino_feat_map,
         )

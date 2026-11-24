@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from squidle_data.geometry import append_exemplar_geometry, squidle_offsets_to_norm_vertices
+from sam3_exemplar.geometry import append_exemplar_geometry, squidle_offsets_to_norm_vertices
 
 # Canonical layout: one media key → six parallel lists consumed by encode_exemplar_prompts.
 IDX_BBOXES = 0
@@ -27,6 +27,7 @@ __all__ = [
     "empty_exemplar_media_lists",
     "get_or_create_media_entry",
     "parse_exemplar_media_fields",
+    "row_norm_geometry",
     "squidle_row_norm_geometry",
 ]
 
@@ -92,6 +93,9 @@ def squidle_row_norm_geometry(
     if not vertices:
         return xf, yf, None
     return xf, yf, vertices
+
+
+row_norm_geometry = squidle_row_norm_geometry
 
 
 def parse_exemplar_media_fields(exemplar_fields) -> Tuple[list, list, list, list, list, list]:

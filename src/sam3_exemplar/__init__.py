@@ -6,8 +6,10 @@ from sam3_exemplar.file_exemplars import (
     annotated_image_indices,
     annotation_indices,
     load_exemplar_annotations,
-    load_squidle_annotation_df,
     select_k_shot_annotations,
+)
+from sam3_exemplar.squidle_exemplars import (
+    load_squidle_annotation_df,
     squidle_negative_exemplars_for_image,
     squidle_positive_label_ids_on_image,
 )

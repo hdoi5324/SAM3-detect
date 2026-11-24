@@ -1,8 +1,15 @@
-"""Shared 2D geometry helpers for exemplar prompts and COCO export."""
+"""Shared 2D geometry helpers for exemplar prompts and COCO export.
+
+This module is part of the Squidle-free public core (SAM3-FSOD): it must
+never import ``squidle_data``, ``sqapi`` or ``sqbot_framework``.
+"""
 
 from __future__ import annotations
 
-from typing import Sequence
+import ast
+import json
+import math
+from typing import List, Sequence, Tuple
 
 import numpy as np
 
@@ -52,6 +59,87 @@ def polygon_area_pixels(vertices: Sequence[Sequence[float]]) -> float:
         x2, y2 = vertices[(i + 1) % len(vertices)]
         area += x1 * y2 - x2 * y1
     return abs(area) / 2.0
+
+
+def _is_missing(value) -> bool:
+    if value is None:
+        return True
+    return isinstance(value, float) and math.isnan(value)
+
+
+def parse_polygon_rel(poly_val) -> List[Tuple[float, float]]:
+    """Parse a polygon cell into relative (dx, dy) vertex offsets.
+
+    Accepts a list/tuple of ``[dx, dy]`` (or ``{"xy": [dx, dy]}``) items, or a
+    string encoding of one (Python-literal or JSON). Empty/missing -> ``[]``.
+    """
+    if _is_missing(poly_val):
+        return []
+    if isinstance(poly_val, (list, tuple)):
+        seq = poly_val
+    else:
+        s = str(poly_val).strip()
+        if not s:
+            return []
+        try:
+            seq = ast.literal_eval(s)
+        except Exception:
+            seq = json.loads(s)
+    out: List[Tuple[float, float]] = []
+    for item in seq:
+        if isinstance(item, dict) and "xy" in item:
+            x, y = item["xy"]
+        else:
+            x, y = item
+        out.append((float(x), float(y)))
+    return out
+
+
+def clip_norm_xy(x: float, y: float) -> Tuple[float, float]:
+    """Clamp relative image coordinates to [0, 1]."""
+    return max(0.0, min(1.0, float(x))), max(0.0, min(1.0, float(y)))
+
+
+def offsets_to_norm_vertices(
+    x: float,
+    y: float,
+    poly_val,
+    *,
+    clip: bool = True,
+) -> List[Tuple[float, float]]:
+    """Convert relative polygon offsets around a click ``(x, y)`` to norm vertices."""
+    vertices: List[Tuple[float, float]] = []
+    for dx, dy in parse_polygon_rel(poly_val):
+        nx, ny = float(x) + dx, float(y) + dy
+        if clip:
+            nx, ny = clip_norm_xy(nx, ny)
+        vertices.append((nx, ny))
+    return vertices
+
+
+# Backwards-compatible name (originally in squidle_data.geometry; the polygon
+# format originated in Squidle exports but the helper is format-generic).
+squidle_offsets_to_norm_vertices = offsets_to_norm_vertices
+
+
+def append_exemplar_geometry(
+    bboxes: list,
+    points: list,
+    polygons: list,
+    x: float,
+    y: float,
+    polygon_vertices: Sequence[Sequence[float]],
+    *,
+    bbox_format: str = "xywh",
+) -> None:
+    """Append one exemplar; use polygon sampling when polygon is not a bbox."""
+    points.append((float(x), float(y)))
+    if is_axis_aligned_bbox(polygon_vertices):
+        bboxes.append(bbox_of_vertices(polygon_vertices, fmt=bbox_format))
+        polygons.append(None)
+    else:
+        bboxes.append(None)
+        polygons.append(list(polygon_vertices))
 
 
 def should_process_point(point: dict) -> bool:

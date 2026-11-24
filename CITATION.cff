@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite it as below. A paper describing the
+  FSOD method is in preparation (arXiv preprint to be added on submission);
+  cite that once available.
+title: "Reducing annotation effort of indicator morphospecies with SAM3-based training-free few-shot detection"
+type: software
+authors:
+  - family-names: Doig
+    given-names: Heather
+  - family-names: Perkins
+    given-names: Nicholas
+  - family-names: Williams
+    given-names: Stefan
+version: 0.1.0
+license: Apache-2.0
+repository-code: "https://github.com/hdoi5324/SAM3-FSOD"
+# doi: TODO (add arXiv / journal DOI once available)

@@ -11,7 +11,6 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
-from sqapi import SQMediaObject
 
 IMAGE_EXTS = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp",
@@ -38,8 +37,19 @@ def autocast_scope(
             yield
 
 
+def _load_image_from_url(url: str) -> Image.Image:
+    """Download an image URL with urllib and decode it as PIL RGB."""
+    import io
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"User-Agent": "sam3-fsod/1.0"})
+    with urllib.request.urlopen(req) as resp:  # noqa: S310 - caller-supplied dataset URL
+        data = resp.read()
+    return Image.open(io.BytesIO(data)).convert("RGB")
+
+
 def numpy_bgr_to_pil_rgb(arr: np.ndarray) -> Image.Image:
-    """Convert BGR/RGBA buffers (e.g. from ``SQMediaObject``) to PIL RGB."""
+    """Convert BGR/RGBA buffers (e.g. from OpenCV-style media objects) to PIL RGB."""
     x = np.asarray(arr)
     if x.ndim == 2:
         return Image.fromarray(x, mode="L").convert("RGB")
@@ -71,8 +81,7 @@ def classify_image_string(s: str) -> Kind:
 def load_image(path_or_url, images_dir=None) -> Image.Image:
     kind = classify_image_string(path_or_url)
     if kind == "url_image_like":
-        sq_media = SQMediaObject(path_or_url)
-        return numpy_bgr_to_pil_rgb(sq_media.data())
+        return _load_image_from_url(str(path_or_url))
     full_path = Path(images_dir if images_dir is not None else "./", path_or_url)
     if classify_image_string(str(full_path)) == "path_image_like":
         return Image.open(full_path).convert("RGB")

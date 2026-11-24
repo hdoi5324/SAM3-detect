@@ -140,15 +140,20 @@ class Sam3Processor(_Sam3Processor):
         scale_fct = torch.tensor([img_w, img_h, img_w, img_h]).to(self.device)
         boxes = boxes * scale_fct[None, :]
 
-        out_masks = interpolate(
-            out_masks.unsqueeze(1),
-            (img_h, img_w),
-            mode="bilinear",
-            align_corners=False,
-        ).sigmoid()
-
-        # state["masks_logits"] = out_masks  # skipped: unused full-res float tensor (saves GPU memory)
-        state["masks"] = out_masks > mask_threshold
+        if out_masks.ndim == 2:
+            out_masks = out_masks.unsqueeze(0)
+        # Polygon helpers use normalized coords, so full-res upsample is optional.
+        # Skipping it avoids a multi-GB [N,1,H,W] interpolate on 4K stills (8GB GPUs).
+        if getattr(self, "upsample_masks", True) and out_masks.numel() > 0:
+            out_masks = interpolate(
+                out_masks.unsqueeze(1),
+                (img_h, img_w),
+                mode="bilinear",
+                align_corners=False,
+            ).sigmoid()
+            state["masks"] = out_masks > mask_threshold
+        else:
+            state["masks"] = out_masks.sigmoid() > mask_threshold if out_masks.numel() else out_masks.bool()
         state["boxes"] = boxes
         state["scores"] = out_probs
         return state

@@ -2,81 +2,24 @@
 
 from __future__ import annotations
 
-import ast
-import json
 from typing import List, Sequence, Tuple
 
 import pandas as pd
-from sam3_exemplar.geometry import bbox_of_vertices, is_axis_aligned_bbox, polygon_area_pixels
+
+# Generic helpers moved to the Squidle-free core (sam3_exemplar.geometry,
+# SAM3-FSOD sync manifest); re-exported here for backwards compatibility.
+from sam3_exemplar.geometry import (  # noqa: F401
+    append_exemplar_geometry,
+    bbox_of_vertices,
+    clip_norm_xy,
+    is_axis_aligned_bbox,
+    offsets_to_norm_vertices,
+    parse_polygon_rel,
+    polygon_area_pixels,
+    squidle_offsets_to_norm_vertices,
+)
 
 COL_LIKELIHOOD = "likelihood"
-
-
-def parse_polygon_rel(poly_val) -> List[Tuple[float, float]]:
-    """Parse a polygon cell into relative (dx, dy) vertex offsets."""
-    if pd.isna(poly_val):
-        return []
-    if isinstance(poly_val, (list, tuple)):
-        seq = poly_val
-    else:
-        s = str(poly_val).strip()
-        if not s:
-            return []
-        try:
-            seq = ast.literal_eval(s)
-        except Exception:
-            seq = json.loads(s)
-
-    out: List[Tuple[float, float]] = []
-    for item in seq:
-        if isinstance(item, dict) and "xy" in item:
-            x, y = item["xy"]
-        else:
-            x, y = item
-        out.append((float(x), float(y)))
-    return out
-
-
-def clip_norm_xy(x: float, y: float) -> Tuple[float, float]:
-    """Clamp relative image coordinates to [0, 1]."""
-    return max(0.0, min(1.0, float(x))), max(0.0, min(1.0, float(y)))
-
-
-def squidle_offsets_to_norm_vertices(
-    x: float,
-    y: float,
-    poly_val,
-    *,
-    clip: bool = True,
-) -> List[Tuple[float, float]]:
-    """Convert Squidle ``point.polygon`` offsets and click ``(x, y)`` to norm vertices."""
-    vertices: List[Tuple[float, float]] = []
-    for dx, dy in parse_polygon_rel(poly_val):
-        nx, ny = float(x) + dx, float(y) + dy
-        if clip:
-            nx, ny = clip_norm_xy(nx, ny)
-        vertices.append((nx, ny))
-    return vertices
-
-
-def append_exemplar_geometry(
-    bboxes: list,
-    points: list,
-    polygons: list,
-    x: float,
-    y: float,
-    polygon_vertices: Sequence[Sequence[float]],
-    *,
-    bbox_format: str = "xywh",
-) -> None:
-    """Append one exemplar; use polygon sampling when polygon is not a bbox."""
-    points.append((float(x), float(y)))
-    if is_axis_aligned_bbox(polygon_vertices):
-        bboxes.append(bbox_of_vertices(polygon_vertices, fmt=bbox_format))
-        polygons.append(None)
-    else:
-        bboxes.append(None)
-        polygons.append(list(polygon_vertices))
 
 
 def point_to_bbox_pixels(
